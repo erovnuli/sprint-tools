@@ -1,0 +1,8 @@
+# Parts file for flasher.net (two-transistor LED flasher)
+# REF  FOOTPRINT                   PINMAP (netlist pin = footprint pad)
+# LTspice NPN pins: 1 = C, 2 = B, 3 = E.  The TO-92 footprint pads are 1 = E, 2 = B, 3 = C.
+Q*     fp/TO-92_Inline.kicad_mod   1=3 2=2 3=1
+R*     TH2                         # built in: two through-hole pads, 2.54 mm apart
+C*     TH2
+D*     TH2
+J1     TH2                         # supply connector: pin 1 = +5 V, pin 2 = GND
