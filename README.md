@@ -9,6 +9,8 @@ kpcb2sprint - ეს უტილიტა საშუალებას გა
 net2sprint - მარტივი ავტომატური ტრეისერი (პლატების დამხატავი) შეუძლია .netlist ფაილის მიხედვით (Ltspice, Kicad, EasyEDA) დახატოს პლატის ნახატი.
 იმგვარად, რომ ბილიკებმა ერთმანეთი არ გადაკვეთოს, სქემა იყოს სწორი და პადებიც ერთმანეთს არ ედებოდეს.
 
+ყველა უტილიტა დაწერილია ჩემს მიერ, სხვა საინფორმაციო სააგენტოების თავზეც გავიარე © 
+
 Command-line utilities for **Sprint-Layout 6** boards (`.lay6`) and macros (`.LMK`):
 check boards for mistakes, export them to SVG, and convert KiCad footprints, KiCad boards
 and SPICE netlists into Sprint-Layout files (The basic auto-tracer for quick prototyping).
