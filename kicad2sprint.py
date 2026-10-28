@@ -1,10 +1,3 @@
-# lay6-tools - utilities for Sprint-Layout 6 files
-# Copyright (C) 2026 Alex
-# SPDX-License-Identifier: GPL-3.0-or-later
-# This program is free software: you can redistribute it and/or modify it under the terms of
-# the GNU General Public License as published by the Free Software Foundation, either
-# version 3 of the License, or (at your option) any later version. It is distributed
-# WITHOUT ANY WARRANTY; see the LICENSE file for details.
 """kicad2sprint.py - KiCad footprints (.kicad_mod / .pretty) -> Sprint-Layout 6 macros (.LMK).
 Needs lay6.py next to it.  python kicad2sprint.py MyLib.pretty out_folder [--board] [--no-back-silk]
 """

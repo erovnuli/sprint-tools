@@ -102,13 +102,22 @@ def text_records(s, x, y, size, angle, layer, mirror=False):
     global _font_ok
     if not s.strip():
         return []
+    lines = s.split("\\n") if "\\n" in s else s.split("\n")
+    h = size * 18 / 16                                   # Sprint height: cap height is 16/18 of it
+    strokes, gap = [], size * 1.6
+    for n, ln in enumerate(lines):                       # Sprint's own font when it has every glyph
+        st = L.sprint_font_strokes(ln, h)
+        if st is None:
+            strokes = None
+            break
+        strokes += [[(x, y - n * gap) for x, y in q] for q in st]
     try:
-        import skel_font as S
-        lines = s.split("\\n") if "\\n" in s else s.split("\n")
-        strokes, gap = [], size * 1.6
-        for n, ln in enumerate(lines):
-            st, _ = S.text_strokes(ln, 0, -n * gap, size * 9 / 8, ref="HEL")
-            strokes += st
+        if strokes is None:
+            import skel_font as S
+            strokes = []
+            for n, ln in enumerate(lines):
+                st, _ = S.text_strokes(ln, 0, -n * gap, size * 9 / 8, ref="HEL")
+                strokes += st
         _font_ok = True
     except Exception as e:
         if _font_ok is None:
@@ -131,7 +140,7 @@ def text_records(s, x, y, size, angle, layer, mirror=False):
         out.append(pts)
     ax, ay = out[0][0]
     label = s.encode("ascii", "replace").decode()[:60]
-    return [L.text(label, out, ax, ay, height=size, layer=layer)]
+    return [L.text(label, out, ax, ay, height=h, layer=layer, stroke_w=max(h / 9, 0.15))]
 
 
 def text_of(node, conv_point, board_angle_extra=0.0):

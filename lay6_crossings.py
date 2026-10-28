@@ -1,10 +1,3 @@
-# lay6-tools - utilities for Sprint-Layout 6 files
-# Copyright (C) 2026 Alex
-# SPDX-License-Identifier: GPL-3.0-or-later
-# This program is free software: you can redistribute it and/or modify it under the terms of
-# the GNU General Public License as published by the Free Software Foundation, either
-# version 3 of the License, or (at your option) any later version. It is distributed
-# WITHOUT ANY WARRANTY; see the LICENSE file for details.
 """lay6_crossings.py - find copper tracks that cross each other by mistake in a Sprint-Layout 6 board.
 
     python lay6_crossings.py board.lay6 [--mark marked.lay6] [--tol 0.02]
@@ -31,7 +24,7 @@ COPPER = set(LAYER_NAMES)
 
 def read_tracks(data):
     """-> canvas height (mm), [(object number, layer, width mm, [(x, y) UI mm, ...])]"""
-    canvas_h = struct.unpack_from("<I", data, 0x2F)[0] / 10000.0
+    canvas_h = L.canvas(data)[1]
     out = []
     for n, (o, t, ln) in enumerate(L.walk(data), 1):
         if t != 6 or data[o + 0x16] not in COPPER:
@@ -164,11 +157,14 @@ def main(argv=None):
                     help="also list crossings between tracks that are already connected elsewhere (same net)")
     ap.add_argument("--tol", type=float, default=0.02,
                     help="how close to a track end (mm) still counts as a T joint (default 0.02)")
+    ap.add_argument("--board", dest="board_no", type=int, metavar="N",
+                    help="board number in files with several boards (default: the first one with objects)")
     if argv is None:
         argv = sys.argv[1:]
     if not argv:
         ap.print_help(); return 0
     a = ap.parse_args(argv)
+    L.SELECT = a.board_no
     data = open(a.board, "rb").read()
     if data[:4] != b"\x06\x33\xaa\xff":
         print("not a Sprint-Layout 6 file"); return 1
@@ -189,13 +185,14 @@ def main(argv=None):
           ", plus %d where both tracks already belong to the same connected copper (harmless%s)"
           % (len(same), "" if a.all else "; --all lists them")))
     if a.mark and found:
-        n = struct.unpack_from("<I", data, L.COUNT_OFS)[0]
+        co = L.count_ofs(data)
+        n = struct.unpack_from("<I", data, co)[0]
         rings = L.group([L.arc(x, y, 1.0, 0.2, 0, 0, canvas_h=canvas_h, layer=L.S1) for _, (x, y), _, _ in found],
                         9999)
-        end = L.COUNT_OFS + 4
+        end = co + 4
         for o, t, ln in L.walk(data):
             end = o + ln
-        out = (data[:L.COUNT_OFS] + struct.pack("<I", n + len(rings)) + data[L.COUNT_OFS + 4:end]
+        out = (data[:co] + struct.pack("<I", n + len(rings)) + data[co + 4:end]
                + b"".join(rings) + data[end:])        # rings add nothing to the per-pad list
         open(a.mark, "wb").write(out)
         print("marked copy -> " + a.mark)

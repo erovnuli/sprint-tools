@@ -1,10 +1,3 @@
-# lay6-tools - utilities for Sprint-Layout 6 files
-# Copyright (C) 2026 Alex
-# SPDX-License-Identifier: GPL-3.0-or-later
-# This program is free software: you can redistribute it and/or modify it under the terms of
-# the GNU General Public License as published by the Free Software Foundation, either
-# version 3 of the License, or (at your option) any later version. It is distributed
-# WITHOUT ANY WARRANTY; see the LICENSE file for details.
 """lay6_padcheck.py - check how pads are connected through copper on a Sprint-Layout 6 board.
 
     python lay6_padcheck.py board.lay6 --from tht:1.0/2.0 --to tht:0.5/0.8 [--min 1] [--max 1]
@@ -84,7 +77,7 @@ class Shape:
 
 # ------------------------------------------------------------------ reading the board
 def read(data):
-    canvas_h = struct.unpack_from("<I", data, 0x2F)[0] / 10000.0
+    canvas_h = L.canvas(data)[1]
     pads, copper, zones = [], [], []   # copper: (layer, Shape, pad index / ("zone", n) / None)
     for o, t, ln in L.walk(data):
         lay = data[o + 0x16]
@@ -240,11 +233,14 @@ def main(argv=None):
     ap.add_argument("--tol", type=float, default=0.01, help="size tolerance in mm (default 0.01)")
     ap.add_argument("--mark", metavar="OUT.lay6", help="write a copy with failing pads ringed")
     ap.add_argument("--list", action="store_true", help="list the pad sizes found on the board and exit")
+    ap.add_argument("--board", dest="board_no", type=int, metavar="N",
+                    help="board number in files with several boards (default: the first one with objects)")
     if argv is None:
         argv = sys.argv[1:]
     if not argv:
         ap.print_help(); return 0
     a = ap.parse_args(argv)
+    L.SELECT = a.board_no
     data = open(a.board, "rb").read()
     if data[:4] != b"\x06\x33\xaa\xff":
         print("not a Sprint-Layout 6 file"); return 1
@@ -296,11 +292,12 @@ def main(argv=None):
     marks = [pads[i]["at"] for i, _ in fails] + [pads[j]["at"] for j, _ in shared]
     if a.mark and marks:
         rings = L.group([L.arc(x, y, 1.6, 0.2, 0, 0, canvas_h=canvas_h, layer=L.S1) for x, y in marks], 9998)
-        n = struct.unpack_from("<I", data, L.COUNT_OFS)[0]
-        end = L.COUNT_OFS + 4
+        co = L.count_ofs(data)
+        n = struct.unpack_from("<I", data, co)[0]
+        end = co + 4
         for o, t, ln in L.walk(data):
             end = o + ln
-        out = (data[:L.COUNT_OFS] + struct.pack("<I", n + len(rings)) + data[L.COUNT_OFS + 4:end]
+        out = (data[:co] + struct.pack("<I", n + len(rings)) + data[co + 4:end]
                + b"".join(rings) + data[end:])
         open(a.mark, "wb").write(out)
         print("marked copy -> " + a.mark)

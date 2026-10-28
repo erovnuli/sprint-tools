@@ -17,7 +17,7 @@ octagon, 2:1 oblong at any angle, plated, thermal), zones (solid, hatched, cutou
 bottom copper), lines, arcs, circles, outline-layer drawings, Latin and Georgian text,
 groups, board and macro files, KiCad-converted footprints.
 """
-import base64, struct
+import base64, os, struct
 
 UNIT = 10000.0           # stored units per mm
 COUNT_OFS = 0x21A        # u32 object count; records start right after
@@ -140,21 +140,61 @@ def arc(x, y, radius, width, start, end, canvas_h=100.0, layer=SILK):
     return bytes(r)
 
 
-def text(label, strokes, x, y, canvas_h=100.0, height=None, layer=SILK):
+def text(label, strokes, x, y, canvas_h=100.0, height=None, layer=SILK, stroke_w=None):
     """Text object. label = ASCII string shown in the app's edit box.
     strokes = list of polylines [(x, y), ...] in UI mm - this is what the app DRAWS.
     The app does not re-render on load; if the user edits the label in the app,
-    it re-renders the strokes from the label with its own font."""
+    it re-renders the strokes from the label with its own font.
+    stroke_w = line width of the strokes in mm (the app uses height / 9; default: the
+    template's 0.2222, i.e. 2 mm text)."""
     h = bytearray(TEXT_HDR)
     struct.pack_into("<2f", h, 0x01, _f(x), _f(y - canvas_h))
     if height is not None: struct.pack_into("<f", h, 0x09, _f(height))
     h[0x16] = layer
     r = bytes(h) + struct.pack("<I", len(label)) + label.encode("ascii")
     r += struct.pack("<III", 0, 0, len(strokes))
+    sh = bytearray(STROKE_HDR)
+    if stroke_w is not None:
+        struct.pack_into("<I", sh, 0x11, int(round(_f(stroke_w))))
     for s in strokes:
-        r += STROKE_HDR + struct.pack("<I", len(s))
+        r += bytes(sh) + struct.pack("<I", len(s))
         r += b"".join(struct.pack("<2f", _f(px), _f(py - canvas_h)) for px, py in s)
     return r
+
+
+_SPRINT_FONT = None
+
+
+def sprint_font_strokes(s, height):
+    """Strokes of s in Sprint-Layout's own label font (sprint_font.json, captured from the app),
+    baseline at y = 0, starting at x = 0, in mm. None if a character has no glyph.
+    Grid: x step height/15, y step height/18, letter gap 2.2/9 of the height."""
+    global _SPRINT_FONT
+    if _SPRINT_FONT is None:
+        import json
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sprint_font.json")
+        g = json.load(open(path, encoding="utf-8"))["glyphs"]
+        norm = {}
+        for ch, sts in g.items():
+            xs = [p[0] for st in sts for p in st]
+            flip = max(xs) <= 0 < -min(xs)              # a few glyphs were captured mirrored
+            sts = [[(-x if flip else x, y) for x, y in st] for st in sts]
+            x0 = min(p[0] for st in sts for p in st)
+            norm[ch] = [[(x - x0, y) for x, y in st] for st in sts]
+        _SPRINT_FONT = norm
+    sx, sy, gap = height / 15.0, height / 18.0, 2.2 * height / 9.0
+    out, x = [], 0.0
+    for ch in s:
+        if ch == " ":
+            x += 6 * sx + gap
+            continue
+        sts = _SPRINT_FONT.get(ch)
+        if sts is None:
+            return None
+        for st in sts:
+            out.append([(x + px * sx, py * sy) for px, py in st])
+        x += max(p[0] for st in sts for p in st) * sx + gap
+    return out
 
 
 THT = _b(
@@ -294,39 +334,97 @@ def build(path, objects, canvas_h=100.0):
     return data
 
 
+SELECT = None    # board to work on in multi-board files: None = first board with objects, or 1, 2, ...
+
+
+def boards(data):
+    """All boards of a file: [{name, header, count_ofs, start, end, n, canvas_w, canvas_h}].
+    Layout: magic, u32 number of boards, then per board a 0x212-byte header (u8 name length +
+    name, canvas width/height at +0x23/+0x27), u32 object count, the objects and one u32 per pad
+    of that board; after the last board one u32 and the trailer (307 bytes in most files)."""
+    nb = struct.unpack_from("<I", data, 4)[0]
+    if not 1 <= nb <= 1000:
+        raise ValueError("implausible number of boards: %d" % nb)
+    out, o = [], 8
+    for _ in range(nb):
+        nl = data[o]
+        b = dict(name=data[o + 1:o + 1 + nl].decode("cp1251", "replace"), header=o, count_ofs=o + 0x212,
+                 start=o + 0x216, n=struct.unpack_from("<I", data, o + 0x212)[0],
+                 canvas_w=struct.unpack_from("<I", data, o + 0x23)[0] / 1e4,
+                 canvas_h=struct.unpack_from("<I", data, o + 0x27)[0] / 1e4)
+        p, pads = b["start"], 0
+        for _ in range(b["n"]):
+            if data[p] in (2, 8):
+                pads += 1
+            p += record_length(data, p)
+        b["end"] = p                  # end of the objects (new objects are inserted here)
+        b["pads"] = pads
+        out.append(b)
+        o = p + 4 * pads              # this board's pad list (one u32 per pad) comes next
+    return out
+
+
+def board(data):
+    """The board the tools work on (see SELECT)."""
+    bs = boards(data)
+    if SELECT:
+        if not 1 <= SELECT <= len(bs):
+            raise ValueError("this file has %d board(s); --board %d does not exist" % (len(bs), SELECT))
+        return bs[SELECT - 1]
+    for b in bs:
+        if b["n"]:
+            return b
+    return bs[0]
+
+
+def count_ofs(data):
+    return board(data)["count_ofs"]
+
+
+def canvas(data):
+    """(width, height) in mm of the selected board's canvas."""
+    b = board(data)
+    return b["canvas_w"], b["canvas_h"]
+
+
+def record_length(data, o):
+    """Length of the object record at o (the format has no length field)."""
+    t = data[o]
+    if t == 7:
+        L = struct.unpack_from("<I", data, o + 0x4D)[0]
+        p = o + 0x51 + L
+        p += 4 + struct.unpack_from("<I", data, p)[0]   # element name string (usually empty)
+        k = struct.unpack_from("<I", data, p)[0]
+        p += 4 + 4 * k
+        m = struct.unpack_from("<I", data, p)[0]
+        p += 4
+        for _ in range(m):
+            q = struct.unpack_from("<I", data, p + 0x4D)[0]
+            p += 0x51 + 8 * q
+        if data[o + 0x17] == 1:          # a component's ID text: component properties follow
+            p += 4 + 4 + 1 + 8           # f32 X/Y offset, u8 centre mode, f64 rotation
+            for _ in range(2):           # u32 length + package string, then comment string
+                p += 4 + struct.unpack_from("<I", data, p)[0]
+            p += 1                       # u8 "use pick+place data"
+        return p - o
+    if t not in (2, 4, 5, 6, 8):
+        raise ValueError("unknown object type %d at offset 0x%X" % (t, o))
+    s = struct.unpack_from("<I", data, o + 0x51)[0]
+    k = struct.unpack_from("<I", data, o + 0x55 + s)[0]
+    p = o + 0x59 + s + 4 * k
+    if t == 5:
+        return p - o
+    m = struct.unpack_from("<I", data, p)[0]
+    return p + 4 + 8 * m - o
+
+
 def walk(data):
-    """Yield (offset, type, length) for top-level objects. Handles pads(8), lines(6),
-    circles(5), text(7), zones(4), through-hole pads(2)."""
-    n = struct.unpack_from("<I", data, COUNT_OFS)[0]
-    o = COUNT_OFS + 4
-    for _ in range(n):
-        t = data[o]
-        if t == 7:
-            L = struct.unpack_from("<I", data, o + 0x4D)[0]
-            p = o + 0x51 + L
-            p += 4 + struct.unpack_from("<I", data, p)[0]   # element name string (usually empty)
-            k = struct.unpack_from("<I", data, p)[0]
-            p += 4 + 4 * k
-            m = struct.unpack_from("<I", data, p)[0]
-            p += 4
-            for _ in range(m):
-                q = struct.unpack_from("<I", data, p + 0x4D)[0]
-                p += 0x51 + 8 * q
-            if data[o + 0x17] == 1:          # a component's ID text: component properties follow
-                p += 4 + 4 + 1 + 8           # f32 X/Y offset, u8 centre mode, f64 rotation
-                for _ in range(2):           # u32 length + package string, then comment string
-                    p += 4 + struct.unpack_from("<I", data, p)[0]
-                p += 1                       # u8 "use pick+place data"
-            ln = p - o
-        else:
-            k = struct.unpack_from("<I", data, o + 0x55 + struct.unpack_from("<I", data, o + 0x51)[0])[0]
-            p = o + 0x59 + struct.unpack_from("<I", data, o + 0x51)[0] + 4 * k
-            if t == 5:
-                ln = p - o
-            else:
-                m = struct.unpack_from("<I", data, p)[0]
-                ln = p + 4 + 8 * m - o
-        yield o, t, ln
+    """Yield (offset, type, length) for the objects of the selected board (see board())."""
+    b = board(data)
+    o = b["start"]
+    for _ in range(b["n"]):
+        ln = record_length(data, o)
+        yield o, data[o], ln
         o += ln
 
 

@@ -1,10 +1,3 @@
-# lay6-tools - utilities for Sprint-Layout 6 files
-# Copyright (C) 2026 Alex
-# SPDX-License-Identifier: GPL-3.0-or-later
-# This program is free software: you can redistribute it and/or modify it under the terms of
-# the GNU General Public License as published by the Free Software Foundation, either
-# version 3 of the License, or (at your option) any later version. It is distributed
-# WITHOUT ANY WARRANTY; see the LICENSE file for details.
 """lay6_vias.py - find vias that do not join the two copper layers.
 
     python lay6_vias.py board.lay6 [--via 0.4/0.7] [--tol 0.01] [--mark out.lay6]
@@ -92,15 +85,18 @@ def main(argv=None):
     ap.add_argument("--mark-floating", action="store_true", help="also ring vias touching no copper at all")
     ap.add_argument("--ring", type=float, default=1.0, help="ring diameter in mm (default 1.0)")
     ap.add_argument("--ring-layer", type=int, default=4, help="ring layer: 2 = S1, 4 = S2 (default 4)")
+    ap.add_argument("--board", dest="board_no", type=int, metavar="N",
+                    help="board number in files with several boards (default: the first one with objects)")
     if argv is None:
         argv = sys.argv[1:]
     if not argv:
         ap.print_help(); return 0
     a = ap.parse_args(argv)
+    L.SELECT = a.board_no
     d = open(a.board, "rb").read()
     if d[:4] != b"\x06\x33\xaa\xff":
         print("not a Sprint-Layout 6 file"); return 1
-    canvas_h = struct.unpack_from("<I", d, 0x2F)[0] / 1e4
+    canvas_h = L.canvas(d)[1]
     drill, outer = (float(v) for v in a.via.split("/"))
     pads, copper = read(d)
     vias = [i for i, p in enumerate(pads) if abs(p["drill"] - drill) <= a.tol and abs(p["outer"] - outer) <= a.tol]
@@ -155,11 +151,12 @@ def main(argv=None):
     if a.mark and marks:
         w = 0.15
         rings = L.group([L.arc(x, y, a.ring / 2, w, 0, 0, canvas_h=canvas_h, layer=a.ring_layer) for x, y in marks], 9997)
-        n = struct.unpack_from("<I", d, L.COUNT_OFS)[0]
-        end = L.COUNT_OFS + 4
+        co = L.count_ofs(d)
+        n = struct.unpack_from("<I", d, co)[0]
+        end = co + 4
         for o, t, ln in L.walk(d):
             end = o + ln
-        out = (d[:L.COUNT_OFS] + struct.pack("<I", n + len(rings)) + d[L.COUNT_OFS + 4:end] + b"".join(rings) + d[end:])
+        out = (d[:co] + struct.pack("<I", n + len(rings)) + d[co + 4:end] + b"".join(rings) + d[end:])
         open(a.mark, "wb").write(out)
         print("%d rings (%.1f mm, layer %d) -> %s" % (len(rings), a.ring, a.ring_layer, a.mark))
     return 0

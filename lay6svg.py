@@ -22,42 +22,64 @@ corner of the Sprint canvas, Y downwards; add --yup for Y upwards from the botto
 import argparse, math, os, struct, sys
 from collections import defaultdict
 
-COUNT_OFS = 0x21A        # u32 object count; records start right after
+
+
+SELECT = None    # board in multi-board files: None = first board with objects, or 1, 2, ...
+
+
+def record_length(data, o):
+    t = data[o]
+    if t == 7:
+        L = struct.unpack_from("<I", data, o + 0x4D)[0]
+        p = o + 0x51 + L
+        p += 4 + struct.unpack_from("<I", data, p)[0]   # element name string (usually empty)
+        p += 4 + 4 * struct.unpack_from("<I", data, p)[0]
+        m = struct.unpack_from("<I", data, p)[0]
+        p += 4
+        for _ in range(m):
+            p += 0x51 + 8 * struct.unpack_from("<I", data, p + 0x4D)[0]
+        if data[o + 0x17] == 1:          # a component's ID text: component properties follow
+            p += 4 + 4 + 1 + 8
+            for _ in range(2):
+                p += 4 + struct.unpack_from("<I", data, p)[0]
+            p += 1
+        return p - o
+    s = struct.unpack_from("<I", data, o + 0x51)[0]
+    k = struct.unpack_from("<I", data, o + 0x55 + s)[0]
+    p = o + 0x59 + s + 4 * k
+    if t == 5:
+        return p - o
+    return p + 4 + 8 * struct.unpack_from("<I", data, p)[0] - o
+
+
+def board(data):
+    """(object start, count, canvas w, canvas h) of the board to export. A file holds u32 number of
+    boards at 4, then per board a 0x212-byte header, u32 object count, the objects and one u32 per pad."""
+    nb = struct.unpack_from("<I", data, 4)[0]
+    o, found, all_ = 8, None, []
+    for i in range(nb):
+        n = struct.unpack_from("<I", data, o + 0x212)[0]
+        b = (o + 0x216, n, struct.unpack_from("<I", data, o + 0x23)[0] / 1e4, struct.unpack_from("<I", data, o + 0x27)[0] / 1e4)
+        all_.append(b)
+        p, pads = b[0], 0
+        for _ in range(n):
+            if data[p] in (2, 8):
+                pads += 1
+            p += record_length(data, p)
+        o = p + 4 * pads              # this board's pad list (one u32 per pad) follows its objects
+    if SELECT:
+        if not 1 <= SELECT <= nb:
+            raise SystemExit("this file has %d board(s); --board %d does not exist" % (nb, SELECT))
+        return all_[SELECT - 1]
+    return next((b for b in all_ if b[1]), all_[0])
 
 
 def walk(data):
-    """Yield (offset, type, length) for top-level objects. Handles pads(8), lines(6),
-    circles(5), text(7), zones(4), through-hole pads(2)."""
-    n = struct.unpack_from("<I", data, COUNT_OFS)[0]
-    o = COUNT_OFS + 4
+    """Yield (offset, type, length) for the objects of the selected board."""
+    o, n = board(data)[:2]
     for _ in range(n):
-        t = data[o]
-        if t == 7:
-            L = struct.unpack_from("<I", data, o + 0x4D)[0]
-            p = o + 0x51 + L
-            p += 4 + struct.unpack_from("<I", data, p)[0]   # element name string (usually empty)
-            k = struct.unpack_from("<I", data, p)[0]
-            p += 4 + 4 * k
-            m = struct.unpack_from("<I", data, p)[0]
-            p += 4
-            for _ in range(m):
-                q = struct.unpack_from("<I", data, p + 0x4D)[0]
-                p += 0x51 + 8 * q
-            if data[o + 0x17] == 1:          # a component's ID text: component properties follow
-                p += 4 + 4 + 1 + 8           # f32 X/Y offset, u8 centre mode, f64 rotation
-                for _ in range(2):           # u32 length + package string, then comment string
-                    p += 4 + struct.unpack_from("<I", data, p)[0]
-                p += 1                       # u8 "use pick+place data"
-            ln = p - o
-        else:
-            k = struct.unpack_from("<I", data, o + 0x55 + struct.unpack_from("<I", data, o + 0x51)[0])[0]
-            p = o + 0x59 + struct.unpack_from("<I", data, o + 0x51)[0] + 4 * k
-            if t == 5:
-                ln = p - o
-            else:
-                m = struct.unpack_from("<I", data, p)[0]
-                ln = p + 4 + 8 * m - o
-        yield o, t, ln
+        ln = record_length(data, o)
+        yield o, data[o], ln
         o += ln
 
 
@@ -80,8 +102,7 @@ f = lambda v: ("%.4f" % v).rstrip("0").rstrip(".") if abs(v) > 5e-5 else "0"
 class Board:
     def __init__(self, data):
         self.data = data
-        self.cw = struct.unpack_from("<I", data, 0x2B)[0] / 1e4
-        self.ch = struct.unpack_from("<I", data, 0x2F)[0] / 1e4
+        self.cw, self.ch = board(data)[2:4]
 
     def P(self, x, y):
         """stored units -> SVG mm (origin top-left of the canvas, Y down)."""
@@ -206,7 +227,7 @@ def write_svg(path, B, g, drills, keep, frame, as_layers=False):
         key, name, col = LAYERS[lay]
         if key not in keep or not g.get(lay):
             continue
-        out.append('<g id="%s"%s fill="%s" stroke="%s">'
+        out.append('<g id="%s"%s fill="%s" stroke="%s" stroke-width="0">'
                    % (name.split()[0], lay_attr(name), col, col))
         out += g[lay]
         out.append('</g>')
@@ -229,11 +250,15 @@ def main(argv=None):
     ap.add_argument("--as-layers", action="store_true",
                     help="mark each Sprint layer as a drawing-program layer (old behaviour; Corel may lock them)")
     ap.add_argument("--frame", action="store_true", help="add the canvas border as a size reference")
+    ap.add_argument("--board", dest="board_no", type=int, metavar="N",
+                    help="board number in files with several boards (default: the first one with objects)")
     if argv is None:
         argv = sys.argv[1:]
     if not argv:
         ap.print_help(); return 0
     a = ap.parse_args(argv)
+    global SELECT
+    SELECT = a.board_no
     data = open(a.board, "rb").read()
     if data[:4] != b"\x06\x33\xaa\xff":
         print("not a Sprint-Layout 6 file"); return 1

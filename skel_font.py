@@ -1,34 +1,9 @@
-# lay6-tools - utilities for Sprint-Layout 6 files
-# Copyright (C) 2026 Alex
-# SPDX-License-Identifier: GPL-3.0-or-later
-# This program is free software: you can redistribute it and/or modify it under the terms of
-# the GNU General Public License as published by the Free Software Foundation, either
-# version 3 of the License, or (at your option) any later version. It is distributed
-# WITHOUT ANY WARRANTY; see the LICENSE file for details.
 """Single-stroke glyphs from an outline font: render -> skeletonize -> trace -> simplify."""
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from skimage.morphology import skeletonize
 
-import os
-
-
-def find_font():
-    """A TrueType font for labels: $LAY6_FONT, DejaVuSans.ttf next to this file, then common
-    system locations (Linux, Windows, macOS)."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    win = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
-    for p in (os.environ.get("LAY6_FONT"), os.path.join(here, "DejaVuSans.ttf"),
-              "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-              os.path.join(win, "DejaVuSans.ttf"), os.path.join(win, "arial.ttf"),
-              os.path.join(win, "segoeui.ttf"), "/Library/Fonts/Arial.ttf",
-              "/System/Library/Fonts/Supplemental/Arial.ttf"):
-        if p and os.path.isfile(p):
-            return p
-    raise FileNotFoundError("no font for labels found: set LAY6_FONT to a .ttf file")
-
-
-FONT = find_font()
+FONT = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
 PX = 400                      # font size in pixels for rendering
 N8 = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
 
@@ -103,11 +78,10 @@ def glyph(ch, font_path=FONT):
     return adv / PX, [[((x - left) / PX, (base - y) / PX) for x, y in p] for p in paths]
 
 
-def text_strokes(s, x0, y0, height=2.0, font_path=FONT, ref='HEL'):
+def text_strokes(s, x0, y0, height=2.0, font_path=FONT, ref='ხლდ'):
     """Single-stroke polylines (UI mm) for any script the font covers.
     Scaled so the tallest of `ref` letters equals the app's cap height (8/9 of height).
-    ref = letters whose height sets the scale (Latin 'HEL'; Georgian e.g. 'ხლდ' with a font
-    that covers it, such as Sylfaen or Noto Sans Georgian via LAY6_FONT)."""
+    For Latin use ref='HEL'."""
     from PIL import ImageFont
     f = ImageFont.truetype(font_path, PX)
     G = {c: glyph(c, font_path) for c in set(s + ref) if c != ' '}
