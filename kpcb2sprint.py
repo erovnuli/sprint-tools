@@ -387,7 +387,7 @@ def main(argv=None):
     write(a.output, objs, canvas)
     print("%(footprints)d footprints, %(tracks)d tracks, %(vias)d vias, %(zones)d zones" % n)
     print("canvas %.0f x %.0f mm%s" % (canvas[0], canvas[1],
-          "" if canvas == (100.0, 100.0) else "  (canvas sizes other than 100 x 100 mm are UNVERIFIED in the app)"))
+          ""))
     for k, v in sorted(notes.items()):
         print("  - %s%s" % (k, "" if v == 1 else " (%d)" % v))
     print("-> " + a.output)

@@ -140,14 +140,29 @@ def arc(x, y, radius, width, start, end, canvas_h=100.0, layer=SILK):
     return bytes(r)
 
 
-def text(label, strokes, x, y, canvas_h=100.0, height=None, layer=SILK, stroke_w=None):
+def text(label, strokes, x, y, canvas_h=100.0, height=None, layer=SILK, stroke_w=None,
+         mirror_h=False, mirror_v=False, rotation=0, weight="normal", width="normal"):
     """Text object. label = ASCII string shown in the app's edit box.
     strokes = list of polylines [(x, y), ...] in UI mm - this is what the app DRAWS.
     The app does not re-render on load; if the user edits the label in the app,
     it re-renders the strokes from the label with its own font.
     stroke_w = line width of the strokes in mm (the app uses height / 9; default: the
-    template's 0.2222, i.e. 2 mm text)."""
+    template's 0.2222, i.e. 2 mm text).
+    mirror_h / mirror_v: the app's mirror flags (u8 +0x32 horizontal, +0x33 vertical). They do not
+    move the strokes - pass strokes already mirrored about the anchor (latin_text() does).
+    rotation: the app's text angle in whole degrees, CLOCKWISE (u32 at +0x35, little-endian; 45, 90
+    and 279 verified - 279 is stored 17 01 00 00). Like the flags it does not move the strokes.
+    weight / width: the app's thickness (thin / normal / bold: f32 at +0x0D = 0 / 1 / 2) and
+    character width (narrow / normal / wide: u8 at +0x11 = 0 / 1 / 2) settings; record only.
+    stroke_w None = the app's width for the weight (text_stroke_width()), if height is given."""
     h = bytearray(TEXT_HDR)
+    struct.pack_into("<I", h, 0x35, int(round(rotation)) % 360)
+    struct.pack_into("<f", h, 0x0D, float(TEXT_WEIGHT[weight]))
+    h[0x11] = TEXT_WIDTH[width]
+    if stroke_w is None and height is not None:
+        stroke_w = text_stroke_width(height, weight)
+    h[0x32] = 1 if mirror_h else 0
+    h[0x33] = 1 if mirror_v else 0
     struct.pack_into("<2f", h, 0x01, _f(x), _f(y - canvas_h))
     if height is not None: struct.pack_into("<f", h, 0x09, _f(height))
     h[0x16] = layer
@@ -165,10 +180,24 @@ def text(label, strokes, x, y, canvas_h=100.0, height=None, layer=SILK, stroke_w
 _SPRINT_FONT = None
 
 
-def sprint_font_strokes(s, height):
+TEXT_WEIGHT = {"thin": 0, "normal": 1, "bold": 2}       # f32 at +0x0D (0.0 / 1.0 / 2.0)
+TEXT_WIDTH = {"narrow": 0, "normal": 1, "wide": 2}       # u8 at +0x11
+_X_SCALE = {0: 2.0 / 3, 1: 1.0, 2: 4.0 / 3}              # glyph width factor (verified)
+_GAP_U = {0: 8.0 / 3, 1: 11.0 / 3, 2: 14.0 / 3}         # letter gap in height/15 units, by weight
+_STROKE = {0: 5.0 / 81, 1: 1.0 / 9, 2: 10.0 / 63}         # stroke width / height, by weight (1 and 2 mm verified)
+
+
+def text_stroke_width(height, weight="normal"):
+    """The app's stroke width for a text of this height and weight (thin / normal / bold)."""
+    return height * _STROKE[TEXT_WEIGHT[weight]]
+
+
+def sprint_font_strokes(s, height, weight="normal", width="normal"):
     """Strokes of s in Sprint-Layout's own label font (sprint_font.json, captured from the app),
     baseline at y = 0, starting at x = 0, in mm. None if a character has no glyph.
-    Grid: x step height/15, y step height/18, letter gap 2.2/9 of the height."""
+    Grid: x step height/15 (times 2/3 narrow, 4/3 wide), y step height/18. After every glyph a
+    gap of 11/3 x-steps (8/3 thin, 14/3 bold; not scaled by the width setting); a space is a
+    0.2-step blank glyph plus its gap. Verified against the app for all weights and widths."""
     global _SPRINT_FONT
     if _SPRINT_FONT is None:
         import json
@@ -182,11 +211,13 @@ def sprint_font_strokes(s, height):
             x0 = min(p[0] for st in sts for p in st)
             norm[ch] = [[(x - x0, y) for x, y in st] for st in sts]
         _SPRINT_FONT = norm
-    sx, sy, gap = height / 15.0, height / 18.0, 2.2 * height / 9.0
+    wt, wd = TEXT_WEIGHT[weight], TEXT_WIDTH[width]
+    u = height / 15.0
+    sx, sy, gap = u * _X_SCALE[wd], height / 18.0, u * _GAP_U[wt]
     out, x = [], 0.0
     for ch in s:
         if ch == " ":
-            x += 6 * sx + gap
+            x += 0.2 * sx + gap
             continue
         sts = _SPRINT_FONT.get(ch)
         if sts is None:
@@ -284,32 +315,44 @@ def zone(points, width=0.3, canvas_h=100.0, layer=C2, hatch=False, hatch_width=N
 
 
 # ----------------------------------------------------------------- app font (Latin)
-# Measured from the app's own strokes; unit u = text height / 9, cap height 8u,
-# letter gap 2.2u. A L E X are exact copies of the app; P S are lookalikes.
-GAP_U = 2.2
-GLYPHS = {
-    "A": (6.0, [[(0, 0), (3, 8), (6, 0)], [(1.2, 3), (4.8, 3)]]),
-    "L": (4.2, [[(0, 8), (0, 0), (4.2, 0)]]),
-    "E": (4.2, [[(4.2, 0), (0, 0), (0, 8), (4.2, 8)], [(0, 4), (4.2, 4)]]),
-    "X": (6.0, [[(0, 8), (6, 0)], [(0, 0), (6, 8)]]),
-    "P": (4.2, [[(0, 0), (0, 8), (3.2, 8), (4.2, 7), (4.2, 5), (3.2, 4), (0, 4)]]),
-    "S": (4.2, [[(4.2, 7), (3.2, 8), (1, 8), (0, 7), (0, 5), (1, 4), (3.2, 4),
-                 (4.2, 3), (4.2, 1), (3.2, 0), (1, 0), (0, 1)]]),
-}
+def app_font_strokes(s, x0, y0, height=2.0, weight="normal", width="normal"):
+    """Strokes of s in the app's own label font, baseline-left at (x0, y0), UI mm.
+    Raises KeyError for a character the app's font does not have."""
+    st = sprint_font_strokes(s, height, weight, width)
+    if st is None:
+        raise KeyError("character not in the app's font: %r" % s)
+    return [[(x0 + x, y0 + y) for x, y in q] for q in st]
 
 
-def app_font_strokes(s, x0, y0, height=2.0):
-    u = height / 9.0
-    out, x = [], x0
-    for ch in s:
-        w, polys = GLYPHS[ch]
-        out += [[(x + px * u, y0 + py * u) for px, py in p] for p in polys]
-        x += (w + GAP_U) * u
-    return out
+def latin_text(s, x, y, height=2.0, canvas_h=100.0, layer=SILK, mirror_h=False, mirror_v=False,
+               rotation=0, weight="normal", width="normal"):
+    """Text exactly as the app would draw it: its own font, stroke width height/9.
+    Editing it in the app gives the same strokes. Mirroring is about the anchor (x, y), as in the
+    app: horizontal = the text runs leftwards from x, vertical = it hangs down from y (verified)."""
+    import math
+    st = [[(x + (x - px if mirror_h else px - x), y + (y - py if mirror_v else py - y)) for px, py in q]
+          for q in app_font_strokes(s, x, y, height, weight, width)]
+    if rotation:              # clockwise about the anchor (verified 45, 90 and 279 degrees, no mirroring)
+        a = math.radians(-rotation)
+        c, sn = math.cos(a), math.sin(a)
+        st = [[(x + (px - x) * c - (py - y) * sn, y + (px - x) * sn + (py - y) * c) for px, py in q] for q in st]
+    return text(s, st, x, y, canvas_h, height=height, layer=layer,
+                stroke_w=text_stroke_width(height, weight), mirror_h=mirror_h, mirror_v=mirror_v,
+                rotation=rotation, weight=weight, width=width)
 
 
-def latin_text(s, x, y, height=2.0, canvas_h=100.0):
-    return text(s, app_font_strokes(s, x, y, height), x, y, canvas_h)
+def set_name(rec, value):
+    """Set the hidden element-name string of a record (u32 length + bytes at +0x51, after the
+    label for text). Sprint-Layout 6.0 keeps it through editing and saving and shows it nowhere,
+    so it can carry extra data (e.g. UTF-8). At most 255 bytes: 256 load but are saved as 255,
+    257 or more make the app quit while opening the file."""
+    v = value.encode("utf-8") if isinstance(value, str) else bytes(value)
+    if len(v) > 255:
+        raise ValueError("element name longer than 255 bytes")
+    r = bytes(rec)
+    p = 0x51 + struct.unpack_from("<I", r, 0x4D)[0] if r[0] == 7 else 0x51
+    n = struct.unpack_from("<I", r, p)[0]
+    return r[:p] + struct.pack("<I", len(v)) + v + r[p + 4 + n:]
 
 
 def set_mask(rec, exposed=True):
@@ -322,13 +365,24 @@ def set_mask(rec, exposed=True):
 
 
 # ------------------------------------------------------------------------- file I/O
-def build(path, objects, canvas_h=100.0):
-    """objects: list of records (bytes) or lists of records. Writes the file."""
+def build(path, objects, canvas_h=100.0, canvas_w=None, name=None):
+    """objects: list of records (bytes) or lists of records. Writes a one-board file.
+    canvas_w / canvas_h: canvas size in mm (header +0x23 / +0x27, i.e. file 0x2B / 0x2F). Make
+    every object's canvas_h argument the same value as canvas_h here (stored Y = Y_ui - canvas_h).
+    Sizes other than 100 x 100 open fine in the app (124 x 100, 152 x 100 seen). name: board
+    (tab) name, at most 9 characters."""
     recs = []
     for o in objects:
         recs += o if isinstance(o, list) else [o]
     n_pads = sum(1 for r in recs if r[0] in (2, 8))
-    data = HEAD + struct.pack("<I", len(recs)) + b"".join(recs) + bytes(4 + 4 * n_pads) + TAIL
+    head = bytearray(HEAD)
+    struct.pack_into("<I", head, 0x2B, int(round((canvas_w or 100.0) * UNIT)))
+    struct.pack_into("<I", head, 0x2F, int(round(canvas_h * UNIT)))
+    if name is not None:
+        nb = name.encode("cp1251")[:9]
+        head[0x08] = len(nb)
+        head[0x09:0x09 + len(nb)] = nb
+    data = bytes(head) + struct.pack("<I", len(recs)) + b"".join(recs) + bytes(4 + 4 * n_pads) + TAIL
     with open(path, "wb") as f:
         f.write(data)
     return data

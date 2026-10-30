@@ -16,17 +16,28 @@ Reading tip: `walk()` in [lay6.py](lay6.py) is a short, complete reader for all 
   often zero.)
 
 ## File layout
+A file holds **one or more boards** (Sprint's tabs at the bottom of the window). **verified** with one- and
+two-board files saved by the program.
+
 | Offset | Content |
 |---|---|
-| 0x000 | magic `06 33 AA FF`, version u32 = 1 |
-| 0x008 | u8 name length + name buffer ("Board 1", "New board") |
-| 0x02B, 0x02F | u32 canvas width, height (0.1 µm units; 1000000 = 100 mm) |
-| 0x042 | f64 that changes on every save (purpose unknown) |
-| … | rest of header, copied verbatim from a donor |
-| **0x21A** | **u32 object count n** (top-level objects only) |
-| 0x21E | n object records, variable length, walked sequentially (never strided) |
-| after records | **4 + 4 × (number of pad objects)** zero bytes — one u32 per **pad (SMD type 8 and through-hole type 2)**, plus one u32. Lines, circles, zones and text add nothing here. Getting this wrong → "stream reading error". **verified** |
-| end | 307-byte trailer (heap pointers, uninitialised memory) copied from donor |
+| 0x000 | magic `06 33 AA FF` |
+| 0x004 | **u32 number of boards** (1 in a one-board file; an earlier version of these notes called it "version = 1") |
+| 0x008 | board 1 header, **0x212 bytes**: u8 name length + name ("Board 1", "New board", "Плата 1" in CP1251), canvas width / height u32 at **header +0x23 / +0x27** (0.1 µm units; 1000000 = 100 mm), f64 at header +0x3A that changes on every save, rest copied verbatim from a donor |
+| header + 0x212 | **u32 object count n** of this board (file offset **0x21A** for board 1) |
+| header + 0x216 | n object records, variable length, walked sequentially (never strided) |
+| after the objects | **this board's pad list: one u32 (zero) per pad object of the board** (SMD type 8 and through-hole type 2). Lines, circles, zones and text add nothing here. **verified** with a 14-board file |
+| … | the next board's header follows directly after the previous board's pad list |
+| after the last board | one u32, then the trailer: 307 bytes (heap pointers, uninitialised memory) in most files, longer in some (seen: 427). Copied from a donor when generating. Getting the pad lists wrong gives "stream reading error". |
+
+Board 1 can be empty (count 0) with the real board in board 2: seen in two user files (a board created in a new
+tab; a Gerber import "XGerber"). A 14-board user file (boards from 16 × 16 to 500 × 120 mm, 17226 objects) confirmed
+that the pad list belongs to each board: with an empty first board it has length 0, which is why two-board files
+first looked as if a single pad list for all boards came at the end. Readers must walk all boards.
+Board names are Pascal strings in a fixed buffer: bytes after the stored length are leftovers ("el" followed by
+"102.188-2" from an earlier name) and must be ignored. The tools work on the first board with objects
+unless `--board N` is given. Writers insert new objects at the end of the selected board and raise its count.
+A marked copy of a two-board file written this way opens normally in Sprint (tested).
 
 ## Common object header (types 2, 4, 5, 6, 8)
 | Offset | Type | Meaning |
@@ -43,7 +54,7 @@ Reading tip: `walk()` in [lay6.py](lay6.py) is a short, complete reader for all 
 | +0x28 | u16 | constant 4000 |
 | +0x3A | u8 | **solder mask: 1 = exposed (no mask over it), 0 = covered by mask** — verified for SMD pads, through-hole pads, tracks and zones, read and generated (`set_mask()` in lay6.py). Sprint's defaults: pads 1, tracks/zones 0 |
 | +0x3E | u32 | constant `15 CD 5B 07` in every pad (not an ID — altering it breaks loading) |
-| +0x51 | u32 + bytes | **element name string**: u32 length n, then n bytes in the Windows ANSI code page. Empty (n = 0) in files saved by Sprint-Layout 6.0; boards from some other Sprint versions store the part's value or name here on every element of a placed part (e.g. "100nF", "10k"). **All offsets below shift by n.** |
+| +0x51 | u32 + bytes | **element name string**: u32 length n, then n bytes in the Windows ANSI code page. Empty (n = 0) in files saved by Sprint-Layout 6.0; boards from some other Sprint versions store the part's value or name here on every element of a placed part (e.g. "100nF", "10k"). **All offsets below shift by n.** **Sprint-Layout 6.0 keeps this string unchanged** (tested with UTF-8 Georgian on a text and a track): through load and save, moving, copy and paste (copies get it too), and editing a text in its dialog (the strokes are redrawn, the string stays). It is shown nowhere in the program, so it can carry extra data. **Limit: at most 255 bytes** (a Delphi short string; tested Oct 2026): 256 bytes still load but Sprint saves only 255, and **257 bytes or more make Sprint-Layout quit while opening the file**, without a message. Writers must never exceed 255 bytes per object. |
 | +0x55+n | u32 | **k = number of groups the object belongs to** (0 = ungrouped) |
 | +0x59+n | k × u32 | group ids, innermost first (see Grouping) |
 | then | u32 + points | point count m, then m × (f32 X, f32 Y) — absent for circles |
@@ -104,13 +115,37 @@ Many other header bytes hold uninitialised memory; copy them from a template.
 | +0x00 | type 7 |
 | +0x01, +0x05 | anchor X, Y (bottom-left of first glyph) |
 | +0x09 | f32 text height (2 mm sample) |
-| +0x0D | f32 1.0 |
+| +0x0D | f32 **thickness**: 0.0 = thin, 1.0 = normal, 2.0 = bold (verified) |
+| +0x11 | u8 **character width**: 0 = narrow, 1 = normal, 2 = wide (verified) |
 | +0x16 | layer |
 | +0x4D | u32 string length L, then L ASCII bytes (no terminator) |
 | then | u32 n + n bytes element name string (normally n = 0, see the common header), u32 k, k × u32 group refs |
 | then | u32 stroke count S, then S stroke sub-records |
 
 Stroke sub-record: 0x4D-byte header (type 6, no group list) + u32 m + m points.
+
+**Mirroring (verified Oct 2026, mirrortest.lay6):** two flags in the text header, **u8 +0x32 = horizontal
+mirror, u8 +0x33 = vertical mirror** (1 = on); nothing else changes, and there is no rotation field involved.
+The stored strokes are already mirrored **about the anchor** (+0x01/+0x05): a horizontally mirrored text runs
+leftwards from the anchor, a vertically mirrored one hangs down from it. `latin_text(..., mirror_h=, mirror_v=)`
+reproduces the app's records (identical apart from heap pointers and float rounding).
+
+**Rotation (verified Oct 2026, rotatest.lay6):** **u32 +0x35 = text angle in whole degrees, clockwise**
+(0, 45, 90 and 279 verified; 279 is stored `17 01 00 00`, so the field is wider than one byte - read and
+write it as u32, the upper bytes are 0). It is a text-specific field,
+not a general object rotation. Like the mirror flags it only records the setting: the strokes are stored
+already rotated clockwise about the anchor (+0x01/+0x05), which stays where it was.
+`latin_text(..., rotation=)` reproduces the app's records. Mirror and rotation together: order not yet tested.
+
+**Thickness and character width (verified Oct 2026, moretext.lay6)** are record-only settings like
+mirror and rotation (header +0x0D and +0x11, see the table); the strokes are stored already laid out:
+- stroke width (stroke sub-record +0x11, u32 0.1 µm, rounded): thin 5/81 × height, normal 1/9 × height,
+  bold 10/63 × height (1 mm text: 617 / 1111 / 1587 units; 2 mm text: 1235 / 2222 / 3175 - verified);
+- character width scales every glyph horizontally: narrow × 2/3, wide × 4/3 (heights unchanged);
+- the gap after each glyph depends on the thickness, not on the width: 8/3 (thin), 11/3 (normal),
+  14/3 (bold) x-steps of height/15;
+- a space is a blank glyph 0.2 x-steps wide (scaled by the width) plus its gap.
+`latin_text(..., weight=, width=)` reproduces all five samples (headers identical, points within 0.001 mm).
 
 **The app draws the stored strokes and never re-renders on load.** The string is only
 what the edit box shows; pressing OK in the edit box re-renders strokes from the string
@@ -122,7 +157,7 @@ Labels are drawn with a **built-in single-stroke font** inside the program (not 
 font). Glyphs sit on a grid: X step = height/15, Y step = height/18, cap height 16 steps,
 baseline 0; the gap between letters is 2.2/9 of the height.
 - **Has glyphs:** `! " # $ % & ( ) * + , - . / 0-9 : < = > ? @ A-Z \ _ a-z ~ ° µ Ä Ö Ü ß ä ö ü €`
-  ('.' is a single point, ':' two points; space advances without strokes).
+  ('.' is a single point, ':' two points; a space is a 0.2-step blank glyph plus the gap).
 - **No glyph (drawn as one zero-length stroke = a dot, zero width + normal gap):**
   `' ; [ ] ^ ` { | }`, all other Latin-1 (± § © ® ² ³ × ÷ é Ø ø …), Greek, **all Cyrillic, Georgian**.
 - The dialog renders from the Unicode text, but the **label string is stored in the ANSI code
@@ -182,6 +217,12 @@ pin order** (SOT-23 MMBTA42: 1st pad = B, 2nd = E, 3rd = C, matching pins 1/2/3)
 the SOT-23 had +0x17 = 2, 2, 0 (meaning unknown). Copying a component gives the copy the next
 number; the ID text is copied unchanged; ID, value and ordinary texts are stored as strokes.
 
+## Extra data in a file (tested Oct 2026)
+- **Appended after the trailer:** Sprint-Layout opens the file normally (it reads only what the counts say), but
+  **drops the appended bytes when it saves**. Only for data that can be lost or rebuilt.
+- **Element name string of an object:** kept through opening, moving, copying, editing and saving, **up to 255
+  bytes per object** (see the common header). Larger data has to be split over several objects.
+
 ## Unknowns / next steps
 - Component centre modes 1/2 and the SMD pad +0x17 values inside components.
 - Zone "cutout soldermask" point-count anomaly (see Zone).
@@ -191,7 +232,7 @@ number; the ID text is copied unchanged; ID, value and ordinary texts are stored
 
 ## Method
 1. Save a baseline file in the program, then files that each change exactly one thing.
-2. Diff; ignore the trailer, pointers and the 0x42 f64.
+2. Diff; ignore the trailer, pointers and the per-board f64 (file 0x42 for board 1).
 3. Record lengths: from file growth; confirm by saving **two** objects of the type —
    one object alone cannot separate a record from padding that follows it
    (this caught the 129-vs-125 pad error and the per-pad tail list).
